@@ -1,9 +1,6 @@
-name = "hadestv"
-compatibility_date = "2026-01-01"
+name = "hadestv-beta"
+compatibility_date = "2026-06-18"
 pages_build_output_dir = "./dist"
-
-[build]
-command = "bun run build"
 
 [vars]
 DUKTEK_BASE = "https://cdn.jsdelivr.net/gh/movietrailersxxi-pixel/web@main/assets"
