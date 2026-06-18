@@ -18,5 +18,6 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "exclude": ["dist", "node_modules", "src/static-bundle.ts"]
 }

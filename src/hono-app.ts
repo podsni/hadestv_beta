@@ -6,6 +6,7 @@
 import { Hono } from "hono";
 import { fetchDuktekData, fetchDuktekRaw, type EdgeFetcher } from "./api";
 import { renderApp } from "./ssr";
+import { CLIENT_JS, STYLE_CSS } from "./static-bundle";
 import type { TimStreamsData } from "./schemas";
 
 export interface AppEnv {
@@ -18,6 +19,27 @@ export interface AppEnv {
 }
 
 export const app = new Hono<{ Bindings: AppEnv }>();
+
+// ---------------------------------------------------------------------------
+// Static assets served from the Function bundle. Pages Functions' catch-all
+// [[path]].ts claims every URL before static-asset serving kicks in, so we
+// answer for /style.css and /client.js ourselves. Immutable cache headers
+// because the URL is content-hashed by Pages' asset pipeline on rebuilds.
+// ---------------------------------------------------------------------------
+
+app.get("/style.css", (c) =>
+  c.body(STYLE_CSS, 200, {
+    "content-type": "text/css; charset=utf-8",
+    "cache-control": "public, max-age=31536000, immutable",
+  }),
+);
+
+app.get("/client.js", (c) =>
+  c.body(CLIENT_JS, 200, {
+    "content-type": "application/javascript; charset=utf-8",
+    "cache-control": "public, max-age=31536000, immutable",
+  }),
+);
 
 /** Edge-aware fetcher with cache hints. The `cf` property isn't on the
  * standard RequestInit type, hence the cast through `unknown`. */
