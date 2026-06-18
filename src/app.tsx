@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from "react";
-import {
-  fetchDuktekData,
-  type TimStreamsData,
-  type Event,
-  type Channel,
-} from "./api";
+import React, { useEffect, useMemo, useState } from "react";
+import type { Channel, Event, TimStreamsData } from "./schemas";
+
+interface AppProps {
+  initialData?: TimStreamsData;
+  upstreamError?: string | null;
+  isServer?: boolean;
+}
 
 const PLAY_ICON = (
   <svg viewBox="0 0 48 48" aria-hidden="true">
@@ -21,8 +22,9 @@ const PLAY_ICON = (
 );
 
 const formatKickoff = (iso: string): string => {
+  if (!iso) return "";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) return iso;
   const date = d.toLocaleDateString(undefined, {
     weekday: "short",
     month: "short",
@@ -35,36 +37,61 @@ const formatKickoff = (iso: string): string => {
   return `${date} · ${time}`;
 };
 
-const App = () => {
-  const [data, setData] = useState<TimStreamsData | null>(null);
+const App = ({ initialData, upstreamError, isServer }: AppProps) => {
+  // SSR-safe: read from window only on the client.
+  const initialFromWindow =
+    !isServer && typeof window !== "undefined"
+      ? ((window as unknown as { __HADESTV__?: TimStreamsData }).__HADESTV__ ??
+        undefined)
+      : undefined;
+
+  const [data, setData] = useState<TimStreamsData>(
+    initialData ??
+      initialFromWindow ?? { events: [], channels: [], replays: [] },
+  );
   const [activeStream, setActiveStream] = useState<string | null>(null);
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(upstreamError ?? null);
   const [userIp, setUserIp] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
+    if (isServer) return;
+    // Client-only: fetch user's IP for the masthead pill.
     fetch("https://api.ipify.org?format=json")
-      .then((r) => r.json())
-      .then((j) => setUserIp(j.ip))
-      .catch(() => {});
-    fetchDuktekData()
-      .then((d) => {
-        setData(d);
-        setLoading(false);
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: unknown) => {
+        const ip =
+          j && typeof j === "object" && "ip" in j && typeof j.ip === "string"
+            ? j.ip
+            : null;
+        if (ip) setUserIp(ip);
       })
-      .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
-        setLoading(false);
-      });
-  }, []);
+      .catch(() => {});
+  }, [isServer]);
+
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const resp = await fetch("/api/channels");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const next: TimStreamsData = await resp.json();
+      setData(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const sportsChannels = useMemo(
-    () => (data?.channels || []).filter((c) => c.genre === 1),
+    () => (data.channels || []).filter((c) => c.genre === 1),
     [data],
   );
   const entertainmentChannels = useMemo(
-    () => (data?.channels || []).filter((c) => c.genre === 2),
+    () => (data.channels || []).filter((c) => c.genre === 2),
     [data],
   );
 
@@ -81,21 +108,7 @@ const App = () => {
     setActiveTitle(null);
   };
 
-  if (loading) {
-    return (
-      <div className="state-full">
-        <div>
-          <div className="spinner" />
-          <p className="state-mark">
-            Descending <em>into the depths</em>
-          </p>
-          <p>Tuning the broadcast…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
+  if (error && data.channels.length === 0 && data.events.length === 0) {
     return (
       <div className="state-full">
         <div>
@@ -103,6 +116,11 @@ const App = () => {
             Signal <em>lost</em>
           </p>
           <p>{error}</p>
+          <p style={{ marginTop: "24px" }}>
+            <button type="button" className="btn" onClick={refresh}>
+              Try again
+            </button>
+          </p>
         </div>
       </div>
     );
@@ -110,7 +128,7 @@ const App = () => {
 
   return (
     <>
-      <Masthead userIp={userIp} />
+      <Masthead userIp={userIp} onRefresh={refresh} refreshing={refreshing} />
 
       <main className="container">
         {activeStream && (
@@ -152,7 +170,16 @@ const App = () => {
           </section>
         )}
 
-        <EventsSection events={data?.events || []} onPlay={playStream} />
+        {error && (
+          <p className="error-banner" role="status">
+            <em>Heads up:</em> {error}. Showing the last cached dispatch.
+            <button type="button" className="btn btn-link" onClick={refresh}>
+              Retry
+            </button>
+          </p>
+        )}
+
+        <EventsSection events={data.events || []} onPlay={playStream} />
 
         <ChannelsSection
           id="sports"
@@ -188,7 +215,13 @@ const App = () => {
   );
 };
 
-const Masthead = ({ userIp }: { userIp: string | null }) => (
+interface MastheadProps {
+  userIp: string | null;
+  onRefresh: () => void;
+  refreshing: boolean;
+}
+
+const Masthead = ({ userIp, onRefresh, refreshing }: MastheadProps) => (
   <>
     <header className="masthead">
       <div className="masthead-inner">
@@ -199,7 +232,17 @@ const Masthead = ({ userIp }: { userIp: string | null }) => (
         <h1 className="wordmark">
           Hades<span className="ampersand">/</span>TV
         </h1>
-        <div className="masthead-meta right">A daily dispatch of streams</div>
+        <div className="masthead-meta right">
+          <button
+            type="button"
+            className="refresh-btn"
+            onClick={onRefresh}
+            disabled={refreshing}
+            aria-label="Refresh channel listings"
+          >
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </div>
       <div className="masthead-rule" />
       <p className="tagline">
@@ -208,10 +251,10 @@ const Masthead = ({ userIp }: { userIp: string | null }) => (
       </p>
     </header>
 
-    <nav className="masthead-nav">
+    <nav className="masthead-nav" aria-label="Section navigation">
       <div className="masthead-nav-inner">
         <nav>
-          <a href="#events">Live & Upcoming</a>
+          <a href="#events">Live &amp; Upcoming</a>
           <a href="#sports">Sports TV</a>
           <a href="#entertainment">Entertainment</a>
         </nav>
@@ -240,7 +283,26 @@ const EventsSection = ({
   events: Event[];
   onPlay: (url: string, title: string) => void;
 }) => {
-  if (!events.length) return null;
+  if (!events.length) {
+    return (
+      <section id="events" className="section">
+        <header className="section-head">
+          <div>
+            <span className="section-kicker">
+              Section I · Today's programme
+            </span>
+            <h2 className="section-title">
+              Live <em>&amp; Upcoming</em>
+            </h2>
+            <p className="section-blurb">
+              No fixtures on the wire right now — check back at the next
+              kickoff.
+            </p>
+          </div>
+        </header>
+      </section>
+    );
+  }
 
   return (
     <section id="events" className="section">
@@ -286,7 +348,9 @@ const EventCard = ({
       onClick={() => onPlay(ev.url, ev.name)}
     >
       <div className="thumb">
-        {ev.logo && <img src={ev.logo} alt="" loading="lazy" />}
+        {ev.logo && (
+          <img src={ev.logo} alt="" loading="lazy" decoding="async" />
+        )}
       </div>
       <div className="meta">
         <span className="league">{league}</span>
@@ -365,7 +429,9 @@ const ChannelCard = ({
       onClick={() => onPlay(ch.url, ch.name)}
     >
       <div className="thumb">
-        {ch.logo && <img src={ch.logo} alt="" loading="lazy" />}
+        {ch.logo && (
+          <img src={ch.logo} alt="" loading="lazy" decoding="async" />
+        )}
         <span className="play-icon">{PLAY_ICON}</span>
       </div>
       <h3 className="name">{ch.name}</h3>

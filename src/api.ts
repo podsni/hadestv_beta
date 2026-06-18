@@ -1,106 +1,41 @@
-export interface Stream {
-  name: string;
-  url: string;
-  vip: boolean;
-}
+import { z } from "zod";
+import {
+  type Channel,
+  type Event,
+  type TimStreamsData,
+  DuktekChannelSchema,
+  DuktekEventSchema,
+  DuktekSportsArraySchema,
+  DuktekHiburanArraySchema,
+  DuktekEventsArraySchema,
+  type DuktekChannel,
+  type DuktekEvent,
+} from "./schemas";
 
-export interface Event {
-  url: string;
-  name: string;
-  logo: string;
-  genre: number;
-  time: string;
-  isevent: boolean;
-  vip: boolean;
-  featured: boolean;
-  streams: Stream[];
-}
-
-export interface Channel {
-  url: string;
-  name: string;
-  logo: string;
-  genre: number;
-  vip: boolean;
-  streams: Stream[];
-}
-
-export interface Replay {
-  url: string;
-  name: string;
-  logo: string;
-  genre: number;
-  time: string;
-  isevent: boolean;
-  vip: boolean;
-  featured: boolean;
-  streams: Stream[];
-}
-
-export interface TimStreamsData {
-  events: Event[];
-  channels: Channel[];
-  replays: Replay[];
-}
-
-export interface DuktekChannel {
-  id_iptv: string;
-  nama_channel: string;
-  tagline: string;
-  jenis: string;
-  url_iptv: string;
-  gbr_base64: string;
-  url_license: string;
-}
-
-export interface DuktekEvent {
-  id_iptv: string;
-  nama_channel: string;
-  url_iptv: string;
-  url_license: string;
-  jenis: string;
-  nama_event: string;
-  player_1: string;
-  player_2: string;
-  logo_1: string;
-  logo_2: string;
-  jadwal_event: string;
-  jadwal_stop: string;
-  deskripsi: string;
-  deskripsi_en: string;
-  id_event: string;
-  thumbnail: string;
-}
-
-export interface DuktekData {
-  sports: DuktekChannel[];
-  hiburan: DuktekChannel[];
-  events: DuktekEvent[];
-}
-
-const API_BASE = "https://api.nuevasantino.xyz/api";
 const DUKTEK_BASE =
   "https://cdn.jsdelivr.net/gh/movietrailersxxi-pixel/web@main/assets";
 
-export async function fetchTimStreamsData(): Promise<TimStreamsData> {
-  const [evResp, chResp, repResp] = await Promise.all([
-    fetch(`${API_BASE}/live-upcoming`),
-    fetch(`${API_BASE}/channels`),
-    fetch(`${API_BASE}/replays`),
-  ]);
-
-  const evData = (await evResp.json()) as unknown as TimStreamsData;
-  const chData = (await chResp.json()) as unknown as TimStreamsData;
-  const repData = (await repResp.json()) as unknown as TimStreamsData;
-
-  return {
-    events: evData.events || [],
-    channels: chData.channels || [],
-    replays: repData.replays || [],
-  };
+export interface FetchOptions {
+  signal?: AbortSignal;
+  /** Override the upstream base URL — useful for tests and Workers where the
+   * CDN is unreachable from the edge. */
+  base?: string;
+  /** Optional fetcher — defaults to global fetch. Workers can pass their own
+   * to attach cache hints or routing overrides. */
+  fetcher?: EdgeFetcher;
 }
 
-export function slugify(name: string): string {
+/** Minimal fetcher shape compatible with both the runtime `fetch` and the
+ * Cloudflare Workers `fetch`. Avoids Bun's augmented global type which
+ * requires extra methods (preconnect etc.) not present everywhere. Named
+ * `EdgeFetcher` to avoid colliding with the built-in `Fetcher` interface
+ * from `@cloudflare/workers-types`. */
+export type EdgeFetcher = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
+function slugify(name: string): string {
   return String(name)
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -116,7 +51,7 @@ function channelPageUrl(idIptv: string, namaChannel: string): string {
   return `https://wc26-pd1.blogspot.com/live-tv-${idIptv}-${slug}.html`;
 }
 
-function duktekChannelToHadestv(ch: DuktekChannel, genre: number): Channel {
+function duktekChannelToHadestv(ch: DuktekChannel, genre: 1 | 2): Channel {
   const pageUrl = channelPageUrl(ch.id_iptv, ch.nama_channel);
   return {
     url: pageUrl,
@@ -130,7 +65,10 @@ function duktekChannelToHadestv(ch: DuktekChannel, genre: number): Channel {
 
 function duktekEventToHadestv(ev: DuktekEvent): Event {
   const pageUrl = channelPageUrl(ev.id_iptv, ev.nama_channel);
-  const name = `${ev.player_1} vs ${ev.player_2}`;
+  const name =
+    ev.player_1 && ev.player_2
+      ? `${ev.player_1} vs ${ev.player_2}`
+      : ev.nama_event || ev.nama_channel || "Untitled event";
   const thumb = ev.thumbnail || ev.logo_1 || "";
   return {
     url: pageUrl,
@@ -145,23 +83,53 @@ function duktekEventToHadestv(ev: DuktekEvent): Event {
   };
 }
 
-export async function fetchDuktekData(): Promise<TimStreamsData> {
-  const [sportsResp, hibResp, eventsResp] = await Promise.all([
-    fetch(`${DUKTEK_BASE}/tv-sports.dat`),
-    fetch(`${DUKTEK_BASE}/tv-hiburan.dat`),
-    fetch(`${DUKTEK_BASE}/tv-events.dat`),
-  ]);
-
-  if (!sportsResp.ok || !hibResp.ok || !eventsResp.ok) {
+async function fetchJson<T>(
+  url: string,
+  schema: z.ZodType<T>,
+  fetcher: EdgeFetcher = fetch,
+): Promise<T> {
+  const resp = await fetcher(url);
+  if (!resp.ok) {
     throw new Error(
-      `Duktek fetch failed: sports=${sportsResp.status}, hib=${hibResp.status}, events=${eventsResp.status}`,
+      `Fetch failed (${resp.status} ${resp.statusText}) for ${url}`,
     );
   }
+  const raw: unknown = await resp.json();
+  const result = schema.safeParse(raw);
+  if (!result.success) {
+    throw new Error(
+      `Zod validation failed for ${url}: ${result.error.issues
+        .slice(0, 3)
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ")}`,
+    );
+  }
+  return result.data;
+}
 
-  const sports = (await sportsResp.json()) as DuktekChannel[];
-  const hiburan = (await hibResp.json()) as DuktekChannel[];
-  const events = (await eventsResp.json()) as DuktekEvent[];
+export interface DuktekRaw {
+  sports: DuktekChannel[];
+  hiburan: DuktekChannel[];
+  events: DuktekEvent[];
+}
 
+export async function fetchDuktekRaw(
+  options: FetchOptions = {},
+): Promise<DuktekRaw> {
+  const base = options.base ?? DUKTEK_BASE;
+  const fetcher = options.fetcher ?? fetch;
+  const [sports, hiburan, events] = await Promise.all([
+    fetchJson(`${base}/tv-sports.dat`, DuktekSportsArraySchema, fetcher),
+    fetchJson(`${base}/tv-hiburan.dat`, DuktekHiburanArraySchema, fetcher),
+    fetchJson(`${base}/tv-events.dat`, DuktekEventsArraySchema, fetcher),
+  ]);
+  return { sports, hiburan, events };
+}
+
+export async function fetchDuktekData(
+  options: FetchOptions = {},
+): Promise<TimStreamsData> {
+  const { sports, hiburan, events } = await fetchDuktekRaw(options);
   return {
     events: events.map(duktekEventToHadestv),
     channels: [
@@ -172,18 +140,11 @@ export async function fetchDuktekData(): Promise<TimStreamsData> {
   };
 }
 
-export async function fetchDuktekRaw(): Promise<DuktekData> {
-  const [sportsResp, hibResp, eventsResp] = await Promise.all([
-    fetch(`${DUKTEK_BASE}/tv-sports.dat`),
-    fetch(`${DUKTEK_BASE}/tv-hiburan.dat`),
-    fetch(`${DUKTEK_BASE}/tv-events.dat`),
-  ]);
-
-  const [sports, hiburan, events] = await Promise.all([
-    sportsResp.json() as Promise<DuktekChannel[]>,
-    hibResp.json() as Promise<DuktekChannel[]>,
-    eventsResp.json() as Promise<DuktekEvent[]>,
-  ]);
-
-  return { sports, hiburan, events };
-}
+export { channelPageUrl, slugify };
+// Re-export schemas for callers that want to validate locally.
+export {
+  DuktekChannelSchema,
+  DuktekEventSchema,
+  type DuktekChannel,
+  type DuktekEvent,
+};

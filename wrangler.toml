@@ -3,4 +3,6 @@ compatibility_date = "2026-06-18"
 pages_build_output_dir = "./dist"
 
 [vars]
+# Override in production by setting the DUKTEK_BASE secret if the upstream
+# mirror ever moves. Defaults to the public jsdelivr CDN.
 DUKTEK_BASE = "https://cdn.jsdelivr.net/gh/movietrailersxxi-pixel/web@main/assets"

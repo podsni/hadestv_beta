@@ -705,6 +705,95 @@ main.container {
 }
 
 /* ========================================================================
+   Refresh button + error banner
+   ======================================================================== */
+
+.refresh-btn {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition:
+    color 0.18s,
+    border-color 0.18s,
+    background 0.18s;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.refresh-btn:active:not(:disabled) {
+  background: var(--paper-tint);
+}
+
+.refresh-btn:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.error-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  margin: 0 0 32px;
+  border: 1px solid var(--hairline-strong);
+  border-left: 3px solid var(--negative);
+  background: var(--paper-tint);
+  color: var(--ink-soft);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.error-banner em {
+  color: var(--negative);
+  font-style: italic;
+  font-weight: 500;
+  margin-right: 4px;
+}
+
+.error-banner .btn {
+  margin-left: auto;
+  border-color: var(--ink-soft);
+  color: var(--ink-soft);
+}
+
+/* ========================================================================
+   Touch target enforcement on coarse pointers (mobile)
+   ======================================================================== */
+
+@media (pointer: coarse) {
+  .btn,
+  .refresh-btn,
+  .channel-card,
+  .event-card,
+  .masthead-nav a {
+    min-height: 44px;
+  }
+
+  .channel-card .thumb,
+  .event-card .thumb {
+    /* Larger tap target wrapper for the play icon overlay */
+    min-height: 44px;
+  }
+}
+
+/* ========================================================================
    Reduced motion
    ======================================================================== */
 
@@ -719,28 +808,37 @@ main.container {
 }
 
 /* ========================================================================
-   Responsive tweaks
+   Responsive tweaks — mobile first
    ======================================================================== */
 
+/* ≤900px — tablets & small laptops: collapse 3-col masthead to single stack
+   and side-by-side section heads. */
 @media (max-width: 900px) {
+  .masthead {
+    padding: 20px var(--gutter) 18px;
+  }
+
   .masthead-inner {
     grid-template-columns: 1fr;
-    gap: 8px;
+    gap: 6px;
     text-align: center;
   }
 
   .masthead-meta {
     text-align: center !important;
+    padding-bottom: 0;
   }
 
   .masthead-nav-inner {
     flex-direction: column;
     align-items: stretch;
     text-align: center;
+    gap: 10px;
   }
 
   .masthead-nav-inner nav {
     justify-content: center;
+    gap: 18px;
   }
 
   .masthead-nav-inner .ip-pill {
@@ -749,20 +847,149 @@ main.container {
 
   .section-head {
     grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .section-count {
+    padding-bottom: 0;
+  }
+
+  main.container {
+    padding-top: 40px;
+    padding-bottom: 48px;
+  }
+
+  .section {
+    margin-top: 56px;
   }
 }
 
-@media (max-width: 480px) {
-  .event-card {
-    grid-template-columns: 96px 1fr;
-    gap: 14px;
+/* ≤720px — phones: single column everywhere, smaller type rhythm. */
+@media (max-width: 720px) {
+  :root {
+    --gutter: clamp(16px, 5vw, 24px);
   }
 
-  .event-card .match {
-    font-size: 18px;
+  body {
+    font-size: 15px;
+  }
+
+  .masthead-rule {
+    margin: 14px var(--gutter) 0;
+  }
+
+  .tagline {
+    margin-top: 10px;
+  }
+
+  .events-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
   }
 
   .channels-grid {
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 22px 16px;
+  }
+
+  .player-section {
+    margin-bottom: 48px;
+  }
+
+  .player-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+
+  .player-bar .now-playing {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+  }
+
+  .player-bar .actions .btn {
+    padding: 7px 11px;
+    font-size: 10px;
+  }
+
+  .site-footer {
+    padding: 24px 0 40px;
+    margin-top: 64px;
+  }
+}
+
+/* ≤480px — small phones: shrink thumbs, tighten padding. */
+@media (max-width: 480px) {
+  .masthead {
+    padding: 16px var(--gutter) 14px;
+  }
+
+  .masthead-meta {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+  }
+
+  .masthead-nav-inner nav {
+    gap: 14px;
+  }
+
+  .masthead-nav-inner nav a {
+    font-size: 11px;
+  }
+
+  .event-card {
+    grid-template-columns: 84px 1fr;
+    gap: 12px;
+  }
+
+  .event-card .match {
+    font-size: 17px;
+    line-height: 1.18;
+  }
+
+  .event-card .league {
+    font-size: 10px;
+  }
+
+  .event-card .time {
+    font-size: 11px;
+  }
+
+  .channels-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 18px 12px;
+  }
+
+  .channel-card .name {
+    font-size: 16px;
+  }
+
+  .channel-card .genre {
+    font-size: 9px;
+    letter-spacing: 0.14em;
+  }
+
+  .channel-card .thumb {
+    margin-bottom: 10px;
+  }
+
+  .section-blurb {
+    font-size: 14px;
+  }
+
+  .state-full {
+    padding: 48px var(--gutter);
+  }
+
+  .error-banner {
+    padding: 12px 14px;
+    font-size: 13px;
+    gap: 10px;
+  }
+}
+
+/* ≥1024px — wide screens: extra breathing room. */
+@media (min-width: 1024px) {
+  .channels-grid {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   }
 }
