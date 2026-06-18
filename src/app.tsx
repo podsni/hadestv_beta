@@ -37,6 +37,9 @@ const PLAY_ICON = (
 const RECENT_KEY = "hadestv:recent";
 const RECENT_MAX = 8;
 const ACTIVE_MAX = 6;
+const PAGE_SIZE = 24;
+const PAGE_VISIBLE = 5; // number of page numbers to show in pagination
+const SEARCH_DEBOUNCE_MS = 200;
 
 type RecentEntry = {
   url: string;
@@ -415,6 +418,11 @@ const App = ({
         ).__HADESTV__ ?? undefined)
       : undefined;
 
+  // State. SSR ships the first page slice in `initialChannels`; the full
+  // server-side list lives on `window.__HADESTV__` for the client to
+  // promote after hydration. This keeps the SSR HTML small (fast first
+  // paint on mobile) while still giving the client a complete dataset
+  // for search + pagination.
   const [category, setCategory] = useState<ChannelCategory>(
     initialCategory ?? "id",
   );
@@ -425,14 +433,24 @@ const App = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(upstreamError ?? null);
   const [userIp, setUserIp] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState(""); // raw input
+  const [search, setSearch] = useState(""); // debounced
+  const [page, setPage] = useState(1);
   const [recent, setRecent] = useState<RecentEntry[]>([]);
   const [streamErrors, setStreamErrors] = useState<Record<string, string>>({});
 
-  // Load IP + recent on mount.
+  // Load IP + recent on mount. Promote the SSR-shipped first page to
+  // the full server-side list (if available) so search/pagination work.
   useEffect(() => {
     if (isServer) return;
     setRecent(loadRecent());
+    if (
+      initialFromWindow &&
+      initialChannels &&
+      initialFromWindow.length > initialChannels.length
+    ) {
+      setChannels(initialFromWindow);
+    }
     fetch("https://api.ipify.org?format=json")
       .then((r) => (r.ok ? r.json() : null))
       .then((j: unknown) => {
@@ -446,11 +464,53 @@ const App = ({
         if (ip) setUserIp(ip);
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isServer]);
+
+  // ---- derived state ---------------------------------------------------
+
+  const filteredChannels = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return channels;
+    return channels.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.category.toLowerCase().includes(q) ||
+        c.country.toLowerCase().includes(q) ||
+        c.resolution.toLowerCase().includes(q),
+    );
+  }, [channels, search]);
+
+  const featuredChannels = useMemo(
+    () => filteredChannels.filter((c) => c.logo).slice(0, 12),
+    [filteredChannels],
+  );
+
+  const remainingChannels = useMemo(
+    () =>
+      filteredChannels.filter(
+        (c) => !featuredChannels.find((f) => f.url === c.url),
+      ),
+    [filteredChannels, featuredChannels],
+  );
+
+  const pageCount = Math.max(
+    1,
+    Math.ceil(remainingChannels.length / PAGE_SIZE),
+  );
+  const safePage = Math.min(page, pageCount);
+  const pageStart = (safePage - 1) * PAGE_SIZE;
+  const pagedChannels = useMemo(
+    () => remainingChannels.slice(pageStart, pageStart + PAGE_SIZE),
+    [remainingChannels, pageStart],
+  );
+
+  // ---- actions ---------------------------------------------------------
 
   const fetchCategory = useCallback(async (cat: ChannelCategory) => {
     setLoading(true);
     setError(null);
+    setPage(1); // reset to first page on category change
     try {
       const resp = await fetch(`/api/channels?category=${cat}`);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -464,6 +524,46 @@ const App = ({
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  // Debounce search input → applied `search`. Avoids re-filtering the
+  // whole list on every keystroke (which jankifies typing on mobile).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handle = window.setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1); // reset page on new search
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [searchInput]);
+
+  // Hash sync — shareable deep links to a specific page.
+  useEffect(() => {
+    if (isServer || typeof window === "undefined") return;
+    const m = window.location.hash.match(/page=(\d+)/);
+    if (m && m[1]) {
+      const n = Number.parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > 0) setPage(n);
+    }
+  }, [isServer]);
+
+  useEffect(() => {
+    if (isServer || typeof window === "undefined") return;
+    if (page > 1) {
+      // Keep URL hash in sync for shareable / refresh-safe pagination.
+      const next = `#page=${page}`;
+      if (window.location.hash !== next) {
+        history.replaceState(null, "", next);
+      }
+    } else if (window.location.hash.startsWith("#page=")) {
+      history.replaceState(null, "", window.location.pathname);
+    }
+  }, [isServer, page]);
+
+  const scrollToSection = useCallback((id: string) => {
+    if (typeof document === "undefined") return;
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
   // Keyboard shortcuts.
@@ -485,19 +585,29 @@ const App = ({
         const input = document.getElementById("search-input");
         if (input instanceof HTMLInputElement) input.focus();
       } else if (ev.key === "c" && active.length > 0 && !ev.metaKey) {
-        // 'c' closes the most recently added player.
         ev.preventDefault();
         closeOne(active[0]?.url ?? "");
+      } else if (ev.key === "ArrowLeft" || ev.key === "PageUp") {
+        if (pageCount > 1 && page > 1) {
+          ev.preventDefault();
+          setPage((p) => Math.max(1, p - 1));
+          scrollToSection("all");
+        }
+      } else if (ev.key === "ArrowRight" || ev.key === "PageDown") {
+        if (pageCount > 1 && page < pageCount) {
+          ev.preventDefault();
+          setPage((p) => Math.min(pageCount, p + 1));
+          scrollToSection("all");
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isServer, active]);
+  }, [isServer, active, page, pageCount, scrollToSection]);
 
   const playStream = useCallback((ch: M3uChannel) => {
     setActive((prev) => {
-      // Dedupe by URL — move to top if already present.
       const without = prev.filter((p) => p.url !== ch.url);
       return [ch, ...without].slice(0, ACTIVE_MAX);
     });
@@ -525,30 +635,6 @@ const App = ({
   const onStreamError = useCallback((url: string, message: string) => {
     setStreamErrors((prev) => ({ ...prev, [url]: message }));
   }, []);
-
-  const filteredChannels = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return channels;
-    return channels.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.category.toLowerCase().includes(q) ||
-        c.country.toLowerCase().includes(q),
-    );
-  }, [channels, search]);
-
-  const featuredChannels = useMemo(
-    () => filteredChannels.filter((c) => c.logo).slice(0, 12),
-    [filteredChannels],
-  );
-
-  const remainingChannels = useMemo(
-    () =>
-      filteredChannels.filter(
-        (c) => !featuredChannels.find((f) => f.url === c.url),
-      ),
-    [filteredChannels, featuredChannels],
-  );
 
   if (error && channels.length === 0 && !isServer) {
     return (
@@ -605,8 +691,10 @@ const App = ({
         )}
 
         <SearchBar
-          value={search}
-          onChange={setSearch}
+          value={searchInput}
+          onChange={setSearchInput}
+          applied={search}
+          resultCount={filteredChannels.length}
           category={category}
           onCategoryChange={fetchCategory}
           loading={loading}
@@ -636,9 +724,14 @@ const App = ({
         <FeaturedChannels channels={featuredChannels} onPlay={playStream} />
 
         <ChannelsList
-          channels={remainingChannels}
+          channels={pagedChannels}
+          totalCount={remainingChannels.length}
+          page={safePage}
+          pageCount={pageCount}
+          onPageChange={setPage}
           onPlay={playStream}
-          search={search}
+          searchInput={searchInput}
+          loading={loading}
         />
       </main>
 
@@ -704,6 +797,8 @@ const Masthead = ({ userIp, onRefresh, loading }: MastheadProps) => (
 interface SearchBarProps {
   value: string;
   onChange: (v: string) => void;
+  applied: string;
+  resultCount: number;
   category: ChannelCategory;
   onCategoryChange: (cat: ChannelCategory) => void;
   loading: boolean;
@@ -712,76 +807,99 @@ interface SearchBarProps {
 const SearchBar = ({
   value,
   onChange,
+  applied,
+  resultCount,
   category,
   onCategoryChange,
   loading,
-}: SearchBarProps) => (
-  <div className="search-bar">
-    <div className="search-input-wrap">
-      <svg
-        viewBox="0 0 24 24"
-        aria-hidden="true"
-        className="search-icon"
-        width="16"
-        height="16"
-      >
-        <circle
-          cx="11"
-          cy="11"
-          r="7"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
+}: SearchBarProps) => {
+  // Show "applied" indicator when the user has typed but the debounced
+  // search hasn't caught up yet (prevents confusion on slow devices).
+  const searching = value.trim() !== applied.trim();
+  return (
+    <div className="search-bar">
+      <div className="search-input-wrap">
+        <svg
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          className="search-icon"
+          width="16"
+          height="16"
+        >
+          <circle
+            cx="11"
+            cy="11"
+            r="7"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+          />
+          <path
+            d="M16 16 L21 21"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          />
+        </svg>
+        <input
+          id="search-input"
+          type="search"
+          className="search-input"
+          placeholder="Cari saluran, kategori, negara…"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Cari saluran"
         />
-        <path
-          d="M16 16 L21 21"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-        />
-      </svg>
-      <input
-        id="search-input"
-        type="search"
-        className="search-input"
-        placeholder="Cari saluran…"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete="off"
-        spellCheck={false}
-        aria-label="Cari saluran"
-      />
+        {value && (
+          <button
+            type="button"
+            className="search-clear"
+            onClick={() => onChange("")}
+            aria-label="Bersihkan pencarian"
+            title="Bersihkan (Esc)"
+          >
+            ×
+          </button>
+        )}
+        {!value && (
+          <kbd className="search-kbd" aria-hidden="true">
+            /
+          </kbd>
+        )}
+      </div>
+      <div className="filter-chips" role="tablist" aria-label="Kategori">
+        {CATEGORIES.map((cat) => (
+          <button
+            key={cat}
+            type="button"
+            role="tab"
+            aria-selected={category === cat}
+            className={`chip ${category === cat ? "chip-active" : ""}`}
+            onClick={() => onCategoryChange(cat)}
+            disabled={loading && category !== cat}
+          >
+            {CATEGORY_LABELS[cat]}
+          </button>
+        ))}
+      </div>
       {value && (
-        <button
-          type="button"
-          className="search-clear"
-          onClick={() => onChange("")}
-          aria-label="Bersihkan pencarian"
-        >
-          ×
-        </button>
+        <p className="search-results-count" aria-live="polite" role="status">
+          {searching ? (
+            <span className="search-results-loading">
+              <span className="dot-pulse" /> Mencari…
+            </span>
+          ) : (
+            <>
+              <strong>{resultCount}</strong> hasil untuk <em>“{applied}”</em>
+            </>
+          )}
+        </p>
       )}
-      <kbd className="search-kbd" aria-hidden="true">
-        /
-      </kbd>
     </div>
-    <div className="filter-chips" role="tablist" aria-label="Kategori">
-      {CATEGORIES.map((cat) => (
-        <button
-          key={cat}
-          type="button"
-          role="tab"
-          aria-selected={category === cat}
-          className={`chip ${category === cat ? "chip-active" : ""}`}
-          onClick={() => onCategoryChange(cat)}
-          disabled={loading && category !== cat}
-        >
-          {CATEGORY_LABELS[cat]}
-        </button>
-      ))}
-    </div>
-  </div>
-);
+  );
+};
 
 // ---------------------------------------------------------------------------
 // PlayerGrid — multi-play layout
@@ -908,19 +1026,32 @@ const FeaturedChannels = ({
 };
 
 // ---------------------------------------------------------------------------
-// ChannelsList — compact list of remaining channels
+// ChannelsList — compact list with pagination
 // ---------------------------------------------------------------------------
+
+interface ChannelsListProps {
+  channels: M3uChannel[];
+  totalCount: number;
+  page: number;
+  pageCount: number;
+  onPageChange: (page: number) => void;
+  onPlay: (ch: M3uChannel) => void;
+  searchInput: string;
+  loading: boolean;
+}
 
 const ChannelsList = ({
   channels,
+  totalCount,
+  page,
+  pageCount,
+  onPageChange,
   onPlay,
-  search,
-}: {
-  channels: M3uChannel[];
-  onPlay: (ch: M3uChannel) => void;
-  search: string;
-}) => {
-  if (channels.length === 0) {
+  searchInput,
+  loading,
+}: ChannelsListProps) => {
+  if (totalCount === 0) {
+    const isSearching = searchInput.trim().length > 0;
     return (
       <section id="all" className="section">
         <header className="section-head">
@@ -930,8 +1061,8 @@ const ChannelsList = ({
               Nothing on the <em>wire</em>
             </h2>
             <p className="section-blurb">
-              {search.trim()
-                ? `Tidak ada saluran yang cocok dengan “${search.trim()}”.`
+              {isSearching
+                ? `Tidak ada saluran yang cocok dengan "${searchInput.trim()}".`
                 : "Coba kategori lain atau segarkan daftar."}
             </p>
           </div>
@@ -939,6 +1070,20 @@ const ChannelsList = ({
       </section>
     );
   }
+
+  // Page-number window — show PAGE_VISIBLE pages around current.
+  const halfWindow = Math.floor(PAGE_VISIBLE / 2);
+  let windowStart = Math.max(1, page - halfWindow);
+  const windowEnd = Math.min(pageCount, windowStart + PAGE_VISIBLE - 1);
+  if (windowEnd - windowStart < PAGE_VISIBLE - 1) {
+    windowStart = Math.max(1, windowEnd - PAGE_VISIBLE + 1);
+  }
+  const pageNumbers: number[] = [];
+  for (let p = windowStart; p <= windowEnd; p++) pageNumbers.push(p);
+
+  const rangeStart = (page - 1) * PAGE_SIZE + 1;
+  const rangeEnd = rangeStart + channels.length - 1;
+
   return (
     <section id="all" className="section">
       <header className="section-head">
@@ -951,9 +1096,12 @@ const ChannelsList = ({
             Klik untuk menambahkan ke multi-play. Maksimal enam stream aktif.
           </p>
         </div>
-        <div className="section-count">{channels.length} saluran</div>
+        <div className="section-count">
+          {rangeStart}–{rangeEnd} / {totalCount} saluran
+        </div>
       </header>
-      <ul className="channel-list">
+
+      <ul className="channel-list" aria-busy={loading}>
         {channels.map((ch) => (
           <li key={ch.url}>
             <button
@@ -990,9 +1138,112 @@ const ChannelsList = ({
           </li>
         ))}
       </ul>
+
+      {pageCount > 1 && (
+        <nav className="pagination" aria-label="Halaman saluran">
+          <button
+            type="button"
+            className="pagination-btn pagination-arrow"
+            disabled={page === 1}
+            onClick={() => onPageChange(page - 1)}
+            aria-label="Halaman sebelumnya"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                d="M15 6l-6 6 6 6"
+              />
+            </svg>
+            <span>Sebelumnya</span>
+          </button>
+
+          <ol className="pagination-pages" role="list">
+            {windowStart > 1 && (
+              <>
+                <PaginationBtn
+                  page={1}
+                  active={page === 1}
+                  onClick={() => onPageChange(1)}
+                />
+                {windowStart > 2 && (
+                  <li className="pagination-ellipsis" aria-hidden>
+                    …
+                  </li>
+                )}
+              </>
+            )}
+            {pageNumbers.map((p) => (
+              <PaginationBtn
+                key={p}
+                page={p}
+                active={p === page}
+                onClick={() => onPageChange(p)}
+              />
+            ))}
+            {windowEnd < pageCount && (
+              <>
+                {windowEnd < pageCount - 1 && (
+                  <li className="pagination-ellipsis" aria-hidden>
+                    …
+                  </li>
+                )}
+                <PaginationBtn
+                  page={pageCount}
+                  active={page === pageCount}
+                  onClick={() => onPageChange(pageCount)}
+                />
+              </>
+            )}
+          </ol>
+
+          <button
+            type="button"
+            className="pagination-btn pagination-arrow"
+            disabled={page === pageCount}
+            onClick={() => onPageChange(page + 1)}
+            aria-label="Halaman berikutnya"
+          >
+            <span>Selanjutnya</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden>
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                d="M9 6l6 6-6 6"
+              />
+            </svg>
+          </button>
+        </nav>
+      )}
     </section>
   );
 };
+
+const PaginationBtn = ({
+  page,
+  active,
+  onClick,
+}: {
+  page: number;
+  active: boolean;
+  onClick: () => void;
+}) => (
+  <li>
+    <button
+      type="button"
+      className={`pagination-btn pagination-num ${active ? "pagination-active" : ""}`}
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      aria-label={`Halaman ${page}`}
+    >
+      {page}
+    </button>
+  </li>
+);
 
 // ---------------------------------------------------------------------------
 // Recent row

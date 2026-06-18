@@ -1237,6 +1237,155 @@ kbd {
 }
 
 /* ========================================================================
+   Pagination — editorial style with hairline rules
+   ======================================================================== */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 40px;
+  padding-top: 28px;
+  border-top: 1px solid var(--hairline);
+}
+
+.pagination-btn {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 0;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition:
+    color 0.16s,
+    background 0.16s,
+    border-color 0.16s;
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-feature-settings: "tnum";
+}
+
+.pagination-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+.pagination-arrow {
+  padding: 8px 14px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pagination-arrow svg {
+  flex-shrink: 0;
+}
+
+.pagination-pages {
+  display: flex;
+  list-style: none;
+  gap: 0;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+}
+
+.pagination-pages li {
+  display: contents;
+}
+
+.pagination-num {
+  border-left-width: 0;
+}
+
+.pagination-pages li:first-child .pagination-num {
+  border-left-width: 1px;
+}
+
+.pagination-active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.pagination-active:hover:not(:disabled) {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.pagination-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  user-select: none;
+}
+
+/* ========================================================================
+   Search results counter
+   ======================================================================== */
+
+.search-results-count {
+  flex-basis: 100%;
+  margin-top: 6px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--ink-mute);
+  letter-spacing: 0;
+}
+
+.search-results-count strong {
+  font-family: var(--font-body);
+  font-style: normal;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+  color: var(--ink);
+  margin-right: 4px;
+}
+
+.search-results-count em {
+  color: var(--gold-deep);
+  font-style: italic;
+}
+
+.search-results-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-faint);
+}
+
+.dot-pulse {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gold);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* ========================================================================
    Responsive tweaks — mobile first
    ======================================================================== */
 

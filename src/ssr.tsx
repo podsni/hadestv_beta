@@ -9,6 +9,8 @@ export interface RenderOptions {
   requestUrl: string;
 }
 
+const PAGE_SIZE_FOR_SSR = 24;
+
 const FONT_LINK =
   '<link rel="preconnect" href="https://fonts.googleapis.com">' +
   '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
@@ -29,15 +31,26 @@ function serialiseData(data: unknown): string {
 }
 
 export function renderApp(opts: RenderOptions): string {
+  // For SSR we only emit the first page of channels in the initial HTML
+  // payload. This keeps the HTML small enough that mobile networks (which
+  // can take 5–10s to fetch a 200KB document) can render the page
+  // quickly. The client fetches the remaining channels lazily when the
+  // user changes category. Featured cards (top picks with logos) are
+  // still sent so the page has visible content immediately.
+  const initialPageChannels = opts.initialChannels.slice(0, PAGE_SIZE_FOR_SSR);
+
   const markup = renderToString(
     <App
-      initialChannels={opts.initialChannels}
+      initialChannels={initialPageChannels}
       initialCategory={opts.initialCategory}
       upstreamError={opts.upstreamError}
       isServer
     />,
   );
 
+  // Stash the full server-side channel list on window for client
+  // hydration to pick up — the user gets fast first paint plus the
+  // complete dataset for filtering & pagination.
   const initialScript =
     `<script>window.__HADESTV__=${serialiseData(opts.initialChannels)};` +
     `window.__HADESTV_CATEGORY__=${JSON.stringify(opts.initialCategory)};` +
