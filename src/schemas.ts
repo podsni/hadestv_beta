@@ -1,100 +1,79 @@
 import { z } from "zod";
 
 /**
- * Zod schemas for the Duktek Sports .dat files.
- * Each .dat file is a JSON array — we validate at the network boundary
- * so the rest of the app can trust its inputs.
+ * Schemas for iptv-org M3U streams.
+ *
+ * Source: https://github.com/iptv-org/iptv (community-curated open M3U list).
+ * Each M3U file is a flat text document — we parse it into structured channel
+ * entries server-side and validate at the network boundary so the rest of
+ * the app can trust its inputs.
  */
 
-export const DuktekStreamSchema = z.object({
-  name: z.string(),
-  url: z.string(),
-  vip: z.boolean().optional().default(false),
-});
-
-export const DuktekChannelSchema = z.object({
-  id_iptv: z.string(),
-  nama_channel: z.string(),
-  tagline: z.string().optional().default(""),
-  jenis: z.string().optional().default(""),
-  url_iptv: z.string(),
-  gbr_base64: z.string().optional().default(""),
-  url_license: z.string().optional().default(""),
-});
-
-export const DuktekEventSchema = z.object({
-  id_iptv: z.string(),
-  nama_channel: z.string(),
-  url_iptv: z.string(),
-  url_license: z.string().optional().default(""),
-  jenis: z.string().optional().default(""),
-  nama_event: z.string().optional().default(""),
-  player_1: z.string().optional().default(""),
-  player_2: z.string().optional().default(""),
-  logo_1: z.string().optional().default(""),
-  logo_2: z.string().optional().default(""),
-  jadwal_event: z.string().optional().default(""),
-  jadwal_stop: z.string().optional().default(""),
-  deskripsi: z.string().optional().default(""),
-  deskripsi_en: z.string().optional().default(""),
-  id_event: z.string().optional().default(""),
-  thumbnail: z.string().optional().default(""),
-});
-
-export const DuktekSportsArraySchema = z.array(DuktekChannelSchema);
-export const DuktekHiburanArraySchema = z.array(DuktekChannelSchema);
-export const DuktekEventsArraySchema = z.array(DuktekEventSchema);
-
-/** Output schemas used by the UI — what we hand to React. */
-
-export const StreamSchema = DuktekStreamSchema;
-
-export const ChannelSchema = z.object({
+/** Parsed M3U channel — one stream per entry. */
+export const M3uChannelSchema = z.object({
   url: z.string(),
   name: z.string(),
-  logo: z.string(),
-  genre: z.union([z.literal(1), z.literal(2)]),
-  vip: z.boolean(),
-  streams: z.array(StreamSchema),
+  logo: z.string().optional().default(""),
+  category: z.string().optional().default(""),
+  country: z.string().optional().default(""),
+  language: z.string().optional().default(""),
+  tvgId: z.string().optional().default(""),
+  referrer: z.string().optional().default(""),
+  userAgent: z.string().optional().default(""),
+  resolution: z.string().optional().default(""),
 });
+export type M3uChannel = z.infer<typeof M3uChannelSchema>;
 
-export const EventSchema = z.object({
-  url: z.string(),
-  name: z.string(),
-  logo: z.string(),
-  genre: z.union([z.literal(1), z.literal(2)]),
-  time: z.string(),
-  isevent: z.literal(true),
-  vip: z.boolean(),
-  featured: z.boolean(),
-  streams: z.array(StreamSchema),
+/** API response shape — keeps the inner channel list generic. */
+export const ChannelsResponseSchema = z.object({
+  category: z.string(),
+  fetchedAt: z.string(),
+  count: z.number(),
+  channels: z.array(M3uChannelSchema),
 });
+export type ChannelsResponse = z.infer<typeof ChannelsResponseSchema>;
 
-export const ReplaySchema = EventSchema.extend({
-  isevent: z.literal(false),
-});
-
-export const TimStreamsDataSchema = z.object({
-  events: z.array(EventSchema),
-  channels: z.array(ChannelSchema),
-  replays: z.array(ReplaySchema),
-});
-
+/** Health endpoint response. */
 export const HealthResponseSchema = z.object({
   ok: z.literal(true),
-  upstream: z.string(),
-  counts: z.object({
-    sports: z.number(),
-    hiburan: z.number(),
-    events: z.number(),
-  }),
+  upstream: z.array(z.string()),
   fetchedAt: z.string(),
+  counts: z.record(z.string(), z.number()),
 });
+export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 
-export type Stream = z.infer<typeof StreamSchema>;
-export type Channel = z.infer<typeof ChannelSchema>;
-export type Event = z.infer<typeof EventSchema>;
-export type Replay = z.infer<typeof ReplaySchema>;
-export type TimStreamsData = z.infer<typeof TimStreamsDataSchema>;
-export type DuktekChannel = z.infer<typeof DuktekChannelSchema>;
-export type DuktekEvent = z.infer<typeof DuktekEventSchema>;
+/** Categories we ship from iptv-org. Kept as a union so the URL
+ *  ?category=... is validated before fetching upstream. */
+export const ChannelCategorySchema = z.enum([
+  "id", // Indonesia
+  "sports",
+  "news",
+  "movies",
+  "kids",
+]);
+export type ChannelCategory = z.infer<typeof ChannelCategorySchema>;
+
+export const CATEGORIES: readonly ChannelCategory[] = [
+  "id",
+  "sports",
+  "news",
+  "movies",
+  "kids",
+] as const;
+
+export const CATEGORY_LABELS: Readonly<Record<ChannelCategory, string>> = {
+  id: "Indonesia",
+  sports: "Sports",
+  news: "News",
+  movies: "Movies",
+  kids: "Kids",
+};
+
+export const CATEGORY_BLURBS: Readonly<Record<ChannelCategory, string>> = {
+  id: "Saluran lokal dari Sabang sampai Merauke — berita, hiburan, dan olahraga.",
+  sports:
+    "Pertandingan langsung dari seluruh dunia — sepak bola, bulu tangkis, basket, dan banyak lagi.",
+  news: "Saluran berita 24/7 — liputan internasional, lokal, dan breaking news.",
+  movies: "Saluran film klasik, dokumenter, dan sinema dunia.",
+  kids: "Saluran ramah anak — kartun, edukasi, dan tontonan keluarga.",
+};

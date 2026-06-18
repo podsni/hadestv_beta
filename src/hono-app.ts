@@ -4,44 +4,75 @@
  * types from the Cloudflare SDK, no Workers-only globals.
  */
 import { Hono } from "hono";
-import { fetchDuktekData, fetchDuktekRaw, type EdgeFetcher } from "./api";
+import {
+  CATEGORIES,
+  type ChannelCategory,
+  ChannelsResponseSchema,
+  type HealthResponse,
+} from "./schemas";
+import { fetchCategory, getCategoryLabel, listCategories } from "./m3u";
 import { renderApp } from "./ssr";
-import type { TimStreamsData } from "./schemas";
 
 export interface AppEnv {
   /** Cloudflare Workers Static Assets binding — Pages injects this
    * automatically when [assets] is set in wrangler.toml. */
   STATIC?: { fetch: (request: Request) => Promise<Response> };
-  /** Override the Duktek CDN URL. */
-  DUKTEK_BASE?: string;
 }
 
 export const app = new Hono<{ Bindings: AppEnv }>();
 
 /** Edge-aware fetcher with cache hints. The `cf` property isn't on the
  * standard RequestInit type, hence the cast through `unknown`. */
-const edgeFetcher: EdgeFetcher = (input, init) => {
+const edgeFetcher: (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response> = (input, init) => {
   return fetch(input, {
     ...init,
-    cf: { cacheTtl: 300, cacheEverything: true },
+    cf: { cacheTtl: 3600, cacheEverything: true },
   } as unknown as RequestInit);
 };
+
+function isCategory(value: string | undefined): value is ChannelCategory {
+  return (
+    typeof value === "string" &&
+    (CATEGORIES as readonly string[]).includes(value)
+  );
+}
 
 // ---------------------------------------------------------------------------
 // API routes
 // ---------------------------------------------------------------------------
 
 app.get("/api/health", (c) =>
-  c.json({ ok: true, ts: new Date().toISOString() }),
+  c.json({
+    ok: true,
+    upstream: listCategories().map(
+      (cat) => `https://iptv-org.github.io/iptv/${endpointFor(cat)}`,
+    ),
+    fetchedAt: new Date().toISOString(),
+    counts: {},
+  } satisfies HealthResponse),
 );
 
 app.get("/api/channels", async (c) => {
+  const requested = c.req.query("category");
+  const category: ChannelCategory = isCategory(requested) ? requested : "id";
+
   try {
-    const data = await fetchDuktekData({
-      base: c.env.DUKTEK_BASE,
-      fetcher: edgeFetcher,
+    const result = await fetchCategory(category, { fetcher: edgeFetcher });
+    const payload = ChannelsResponseSchema.parse({
+      category: getCategoryLabel(result.category),
+      fetchedAt: result.fetchedAt,
+      count: result.channels.length,
+      channels: result.channels,
     });
-    return c.json(data satisfies TimStreamsData);
+    return c.json(payload, 200, {
+      "cache-control":
+        "public, max-age=60, s-maxage=300, stale-while-revalidate=86400",
+      "x-hadestv-render": "api",
+      "x-hadestv-category": result.category,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ ok: false, error: message }, 502);
@@ -49,25 +80,43 @@ app.get("/api/channels", async (c) => {
 });
 
 app.get("/api/stats", async (c) => {
-  try {
-    const raw = await fetchDuktekRaw({
-      base: c.env.DUKTEK_BASE,
-      fetcher: edgeFetcher,
-    });
-    return c.json({
-      ok: true,
-      counts: {
-        sports: raw.sports.length,
-        hiburan: raw.hiburan.length,
-        events: raw.events.length,
-      },
-      fetchedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: message }, 502);
-  }
+  const counts: Record<string, number> = {};
+  let ok = true;
+  await Promise.all(
+    listCategories().map(async (cat) => {
+      try {
+        const r = await fetchCategory(cat, { fetcher: edgeFetcher });
+        counts[cat] = r.channels.length;
+      } catch {
+        counts[cat] = 0;
+        ok = false;
+      }
+    }),
+  );
+  return c.json({
+    ok,
+    upstream: listCategories().map(
+      (cat) => `https://iptv-org.github.io/iptv/${endpointFor(cat)}`,
+    ),
+    fetchedAt: new Date().toISOString(),
+    counts,
+  });
 });
+
+function endpointFor(cat: ChannelCategory): string {
+  switch (cat) {
+    case "id":
+      return "countries/id.m3u";
+    case "sports":
+      return "categories/sports.m3u";
+    case "news":
+      return "categories/news.m3u";
+    case "movies":
+      return "categories/movies.m3u";
+    case "kids":
+      return "categories/kids.m3u";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // SSR home page — Pages will only call this function for non-static paths
@@ -77,19 +126,20 @@ app.get("/api/stats", async (c) => {
 // ---------------------------------------------------------------------------
 
 app.get("/", async (c) => {
-  let data: TimStreamsData = { events: [], channels: [], replays: [] };
+  const category: ChannelCategory = "id";
+  let channels: import("./schemas").M3uChannel[] = [];
   let upstreamError: string | null = null;
+
   try {
-    data = await fetchDuktekData({
-      base: c.env.DUKTEK_BASE,
-      fetcher: edgeFetcher,
-    });
+    const result = await fetchCategory(category, { fetcher: edgeFetcher });
+    channels = result.channels;
   } catch (err) {
     upstreamError = err instanceof Error ? err.message : String(err);
   }
 
   const html = renderApp({
-    initialData: data,
+    initialChannels: channels,
+    initialCategory: category,
     upstreamError,
     requestUrl: c.req.url,
   });
