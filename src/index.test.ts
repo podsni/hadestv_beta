@@ -1,12 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { buildGreeting } from "./index";
+import { expect, test } from "bun:test";
 
-describe("buildGreeting", () => {
-  test("returns default greeting", () => {
-    expect(buildGreeting()).toBe("Hello via Bun!");
-  });
-
-  test("returns custom greeting name", () => {
-    expect(buildGreeting("Ramadhan")).toBe("Hello via Bun, Ramadhan!");
-  });
+test("slugify produces stable ids", async () => {
+  const { slugify } = await import("./api");
+  expect(slugify("beIN Sports AU 1 A+")).toBe("bein-sports-au-1-a");
+  expect(slugify("FIFA World Cup — México vs South Korea")).toBe(
+    "fifa-world-cup-mexico-vs-south-korea",
+  );
+  expect(slugify("  Hello World!! ")).toBe("hello-world");
 });

@@ -1,10 +1,25 @@
-export function buildGreeting(name?: string): string {
-  if (!name) {
-    return "Hello via Bun!";
-  }
-  return `Hello via Bun, ${name}!`;
+import { rm, cp } from "node:fs/promises";
+
+// Clean previous build
+await rm("./dist", { recursive: true, force: true });
+
+// Bundle the client-side code
+const buildResult = await Bun.build({
+  entrypoints: ["./src/client.tsx"],
+  outdir: "./dist",
+  minify: true,
+  naming: "client.[ext]",
+});
+
+if (!buildResult.success) {
+  // oxlint-disable-next-line no-console
+  for (const log of buildResult.logs) console.error(log);
+  process.exit(1);
 }
 
-if (import.meta.main) {
-  await Bun.write(Bun.stdout, `${buildGreeting()}\n`);
-}
+// Copy static assets
+await cp("./src/style.css", "./dist/style.css");
+await cp("./index.html", "./dist/index.html");
+
+// oxlint-disable-next-line no-console
+console.log("Build complete → ./dist/");

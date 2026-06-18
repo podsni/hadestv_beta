@@ -15,8 +15,16 @@
     "check": "bun run typecheck && bun run lint && bun run fmt:check",
     "//3": "=== Convenience ===",
     "fix": "bun run lint:fix && bun run fmt",
+    "build": "bun run src/index.ts",
+    "dev": "bun run src/index.ts && bun --hot serve ./dist",
     "bench": "bash scripts/bench.sh",
     "prepare": "husky"
+  },
+  "dependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
     "@nkzw/oxlint-config": "^1.0.1",
