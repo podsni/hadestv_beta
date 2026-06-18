@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { Channel, Event, TimStreamsData } from "./schemas";
 
 interface AppProps {
@@ -37,8 +37,46 @@ const formatKickoff = (iso: string): string => {
   return `${date} · ${time}`;
 };
 
+const RECENT_KEY = "hadestv:recent";
+const RECENT_MAX = 6;
+
+type RecentEntry = { url: string; name: string; ts: number };
+
+function loadRecent(): RecentEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (x): x is RecentEntry =>
+          typeof x === "object" &&
+          x !== null &&
+          typeof (x as RecentEntry).url === "string" &&
+          typeof (x as RecentEntry).name === "string" &&
+          typeof (x as RecentEntry).ts === "number",
+      )
+      .slice(0, RECENT_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function pushRecent(entry: RecentEntry): RecentEntry[] {
+  if (typeof window === "undefined") return [];
+  const current = loadRecent().filter((e) => e.url !== entry.url);
+  const next = [entry, ...current].slice(0, RECENT_MAX);
+  try {
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  } catch {
+    /* quota exceeded — ignore */
+  }
+  return next;
+}
+
 const App = ({ initialData, upstreamError, isServer }: AppProps) => {
-  // SSR-safe: read from window only on the client.
   const initialFromWindow =
     !isServer && typeof window !== "undefined"
       ? ((window as unknown as { __HADESTV__?: TimStreamsData }).__HADESTV__ ??
@@ -49,15 +87,23 @@ const App = ({ initialData, upstreamError, isServer }: AppProps) => {
     initialData ??
       initialFromWindow ?? { events: [], channels: [], replays: [] },
   );
-  const [activeStream, setActiveStream] = useState<string | null>(null);
-  const [activeTitle, setActiveTitle] = useState<string | null>(null);
+  const [activeStream, setActiveStream] = useState<{
+    url: string;
+    title: string;
+    embedUrl: string;
+  } | null>(null);
+  const [playerLoaded, setPlayerLoaded] = useState(false);
+  const [playerError, setPlayerError] = useState(false);
   const [error, setError] = useState<string | null>(upstreamError ?? null);
   const [userIp, setUserIp] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState("");
+  const [genreFilter, setGenreFilter] = useState<"all" | 1 | 2>("all");
+  const [recent, setRecent] = useState<RecentEntry[]>([]);
 
   useEffect(() => {
     if (isServer) return;
-    // Client-only: fetch user's IP for the masthead pill.
+    setRecent(loadRecent());
     fetch("https://api.ipify.org?format=json")
       .then((r) => (r.ok ? r.json() : null))
       .then((j: unknown) => {
@@ -70,7 +116,32 @@ const App = ({ initialData, upstreamError, isServer }: AppProps) => {
       .catch(() => {});
   }, [isServer]);
 
-  const refresh = async () => {
+  // Keyboard shortcuts
+  useEffect(() => {
+    if (isServer) return;
+    const onKey = (ev: KeyboardEvent) => {
+      const tag = (ev.target as HTMLElement | null)?.tagName ?? "";
+      if (tag === "INPUT" || tag === "TEXTAREA") {
+        if (ev.key === "Escape") {
+          (ev.target as HTMLInputElement).blur();
+        }
+        return;
+      }
+      if (ev.key === "Escape" && activeStream) {
+        ev.preventDefault();
+        closePlayer();
+      } else if (ev.key === "/" && !ev.ctrlKey && !ev.metaKey) {
+        ev.preventDefault();
+        const input = document.getElementById("search-input");
+        if (input instanceof HTMLInputElement) input.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isServer, activeStream]);
+
+  const refresh = useCallback(async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
@@ -84,7 +155,7 @@ const App = ({ initialData, upstreamError, isServer }: AppProps) => {
     } finally {
       setRefreshing(false);
     }
-  };
+  }, [refreshing]);
 
   const sportsChannels = useMemo(
     () => (data.channels || []).filter((c) => c.genre === 1),
@@ -95,18 +166,53 @@ const App = ({ initialData, upstreamError, isServer }: AppProps) => {
     [data],
   );
 
-  const playStream = (url: string, title: string) => {
-    setActiveStream(url);
-    setActiveTitle(title);
+  const playStream = useCallback((url: string, title: string) => {
+    setPlayerError(false);
+    setPlayerLoaded(false);
+    // Use the upstream channel page directly. Duktek's blog page wraps a
+    // Shaka player iframe that handles its own DRM/streaming logic. We
+    // rely on the page being iframe-friendly in modern browsers; if it
+    // isn't, the error state shows an "Open in new tab" fallback.
+    setActiveStream({ url, title, embedUrl: url });
+    setRecent(pushRecent({ url, name: title, ts: Date.now() }));
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
-  };
+  }, []);
 
-  const closePlayer = () => {
+  const closePlayer = useCallback(() => {
     setActiveStream(null);
-    setActiveTitle(null);
-  };
+    setPlayerLoaded(false);
+    setPlayerError(false);
+  }, []);
+
+  const filteredSports = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return sportsChannels;
+    return sportsChannels.filter((c) => c.name.toLowerCase().includes(q));
+  }, [sportsChannels, search]);
+
+  const filteredEntertainment = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return entertainmentChannels;
+    return entertainmentChannels.filter((c) =>
+      c.name.toLowerCase().includes(q),
+    );
+  }, [entertainmentChannels, search]);
+
+  const visibleRecent = useMemo(() => {
+    if (!recent.length) return [];
+    const byUrl = new Map<string, RecentEntry>();
+    for (const ch of data.channels) {
+      for (const e of recent) {
+        if (e.url === ch.url) byUrl.set(ch.url, e);
+      }
+    }
+    return recent
+      .map((r) => byUrl.get(r.url))
+      .filter((x): x is RecentEntry => x !== undefined)
+      .slice(0, 4);
+  }, [recent, data.channels]);
 
   if (error && data.channels.length === 0 && data.events.length === 0) {
     return (
@@ -132,25 +238,58 @@ const App = ({ initialData, upstreamError, isServer }: AppProps) => {
 
       <main className="container">
         {activeStream && (
-          <section className="player-section">
+          <section className="player-section" aria-label="Player">
             <div className="player-frame">
               <div className="player-aspect">
-                <iframe
-                  src={activeStream}
-                  allowFullScreen
-                  allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
-                  referrerPolicy="no-referrer"
-                  title={activeTitle ?? "HadesTV Player"}
-                />
+                {!playerError && (
+                  <iframe
+                    key={activeStream.embedUrl}
+                    src={activeStream.embedUrl}
+                    allowFullScreen
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                    referrerPolicy="no-referrer"
+                    sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts"
+                    title={activeStream.title}
+                    loading="eager"
+                    onLoad={() => setPlayerLoaded(true)}
+                    onError={() => setPlayerError(true)}
+                  />
+                )}
+                {playerError && (
+                  <div className="player-error" role="alert">
+                    <p className="state-mark">
+                      Player <em>blocked</em>
+                    </p>
+                    <p>
+                      The upstream embed could not be loaded. Try opening it
+                      directly in a new tab.
+                    </p>
+                    <p style={{ marginTop: "20px" }}>
+                      <a
+                        href={activeStream.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="btn"
+                      >
+                        Open in new tab
+                      </a>
+                    </p>
+                  </div>
+                )}
+                {!playerLoaded && !playerError && (
+                  <div className="player-loading" aria-hidden="true">
+                    <div className="spinner" />
+                    <span>Tuning the broadcast</span>
+                  </div>
+                )}
               </div>
               <div className="player-bar">
                 <span className="now-playing">
-                  {activeTitle ?? "Now streaming"}
+                  {activeStream.title ?? "Now streaming"}
                 </span>
                 <span className="actions">
                   <a
-                    href={activeStream}
+                    href={activeStream.url}
                     target="_blank"
                     rel="noreferrer"
                     className="btn btn-link"
@@ -161,6 +300,7 @@ const App = ({ initialData, upstreamError, isServer }: AppProps) => {
                     type="button"
                     className="btn btn-link"
                     onClick={closePlayer}
+                    aria-label="Close player (Esc)"
                   >
                     Close
                   </button>
@@ -179,41 +319,68 @@ const App = ({ initialData, upstreamError, isServer }: AppProps) => {
           </p>
         )}
 
+        {visibleRecent.length > 0 && (
+          <RecentRow entries={visibleRecent} onPlay={playStream} />
+        )}
+
+        <SearchBar
+          value={search}
+          onChange={setSearch}
+          genreFilter={genreFilter}
+          onGenreChange={setGenreFilter}
+        />
+
         <EventsSection events={data.events || []} onPlay={playStream} />
 
-        <ChannelsSection
-          id="sports"
-          kicker="Section II"
-          title={
-            <>
-              The <em>Sports</em> Dial
-            </>
-          }
-          blurb="Forty-nine satellite feeds, refreshed from the wire each visit. Every league, every language."
-          channels={sportsChannels}
-          onPlay={playStream}
-          emptyMessage="No sports feeds currently broadcasting."
-        />
+        {(genreFilter === "all" || genreFilter === 1) && (
+          <ChannelsSection
+            id="sports"
+            kicker="Section II"
+            title={
+              <>
+                The <em>Sports</em> Dial
+              </>
+            }
+            blurb="Forty-nine satellite feeds, refreshed from the wire each visit. Every league, every language."
+            channels={filteredSports}
+            onPlay={playStream}
+            emptyMessage={
+              search.trim()
+                ? `No sports feeds matching “${search.trim()}”.`
+                : "No sports feeds currently broadcasting."
+            }
+          />
+        )}
 
-        <ChannelsSection
-          id="entertainment"
-          kicker="Section III"
-          title={
-            <>
-              Late-Night <em>Television</em>
-            </>
-          }
-          blurb="Drama, documentary, wildlife. Forty-two channels from across the archipelago."
-          channels={entertainmentChannels}
-          onPlay={playStream}
-          emptyMessage="No entertainment feeds listed."
-        />
+        {(genreFilter === "all" || genreFilter === 2) && (
+          <ChannelsSection
+            id="entertainment"
+            kicker="Section III"
+            title={
+              <>
+                Late-Night <em>Television</em>
+              </>
+            }
+            blurb="Drama, documentary, wildlife. Forty-two channels from across the archipelago."
+            channels={filteredEntertainment}
+            onPlay={playStream}
+            emptyMessage={
+              search.trim()
+                ? `No entertainment feeds matching “${search.trim()}”.`
+                : "No entertainment feeds listed."
+            }
+          />
+        )}
       </main>
 
       <Footer />
     </>
   );
 };
+
+// --------------------------------------------------------------------
+// Subcomponents
+// --------------------------------------------------------------------
 
 interface MastheadProps {
   userIp: string | null;
@@ -257,6 +424,7 @@ const Masthead = ({ userIp, onRefresh, refreshing }: MastheadProps) => (
           <a href="#events">Live &amp; Upcoming</a>
           <a href="#sports">Sports TV</a>
           <a href="#entertainment">Entertainment</a>
+          <a href="#recent">Recently Played</a>
         </nav>
         {userIp && <span className="ip-pill">IP · {userIp}</span>}
       </div>
@@ -264,13 +432,155 @@ const Masthead = ({ userIp, onRefresh, refreshing }: MastheadProps) => (
   </>
 );
 
+interface SearchBarProps {
+  value: string;
+  onChange: (v: string) => void;
+  genreFilter: "all" | 1 | 2;
+  onGenreChange: (g: "all" | 1 | 2) => void;
+}
+
+const SearchBar = ({
+  value,
+  onChange,
+  genreFilter,
+  onGenreChange,
+}: SearchBarProps) => (
+  <div className="search-bar">
+    <div className="search-input-wrap">
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="search-icon"
+        width="16"
+        height="16"
+      >
+        <circle
+          cx="11"
+          cy="11"
+          r="7"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+        />
+        <path
+          d="M16 16 L21 21"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+      </svg>
+      <input
+        id="search-input"
+        type="search"
+        className="search-input"
+        placeholder="Search channels…"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete="off"
+        spellCheck={false}
+        aria-label="Search channels"
+      />
+      {value && (
+        <button
+          type="button"
+          className="search-clear"
+          onClick={() => onChange("")}
+          aria-label="Clear search"
+        >
+          ×
+        </button>
+      )}
+      <kbd className="search-kbd" aria-hidden="true">
+        /
+      </kbd>
+    </div>
+    <div className="filter-chips" role="tablist" aria-label="Genre filter">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={genreFilter === "all"}
+        className={`chip ${genreFilter === "all" ? "chip-active" : ""}`}
+        onClick={() => onGenreChange("all")}
+      >
+        All
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={genreFilter === 1}
+        className={`chip ${genreFilter === 1 ? "chip-active" : ""}`}
+        onClick={() => onGenreChange(1)}
+      >
+        Sports
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={genreFilter === 2}
+        className={`chip ${genreFilter === 2 ? "chip-active" : ""}`}
+        onClick={() => onGenreChange(2)}
+      >
+        Entertainment
+      </button>
+    </div>
+  </div>
+);
+
+const RecentRow = ({
+  entries,
+  onPlay,
+}: {
+  entries: RecentEntry[];
+  onPlay: (url: string, title: string) => void;
+}) => (
+  <section id="recent" className="section">
+    <header className="section-head">
+      <div>
+        <span className="section-kicker">Recently Played</span>
+        <h2 className="section-title">
+          Back to the <em>screen</em>
+        </h2>
+        <p className="section-blurb">
+          Pick up where you left off — your last few channels, stored locally on
+          this device.
+        </p>
+      </div>
+      <div className="section-count">{entries.length} feeds</div>
+    </header>
+    <div className="recent-grid">
+      {entries.map((e) => (
+        <button
+          key={e.url}
+          type="button"
+          className="recent-card"
+          onClick={() => onPlay(e.url, e.name)}
+        >
+          <span className="recent-name">{e.name}</span>
+          <span className="recent-meta">{timeAgo(Date.now() - e.ts)}</span>
+        </button>
+      ))}
+    </div>
+  </section>
+);
+
+function timeAgo(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
 const Footer = () => (
   <footer className="site-footer">
     <div className="container">
       <p>Stream from the depths.</p>
       <p className="colophon">
         Set in Fraunces &amp; Inter Tight · Programmed by hand · Served from the
-        cloud
+        cloud · Press <kbd>/</kbd> to search, <kbd>Esc</kbd> to close
       </p>
     </div>
   </footer>
@@ -321,10 +631,20 @@ const EventsSection = ({
       </header>
 
       <div className="events-grid">
-        {events.map((ev) => (
+        {events.slice(0, 12).map((ev) => (
           <EventCard key={ev.url} ev={ev} onPlay={onPlay} />
         ))}
       </div>
+      {events.length > 12 && (
+        <details className="events-more">
+          <summary>Show all {events.length} fixtures</summary>
+          <div className="events-grid" style={{ marginTop: "32px" }}>
+            {events.slice(12).map((ev) => (
+              <EventCard key={ev.url} ev={ev} onPlay={onPlay} />
+            ))}
+          </div>
+        </details>
+      )}
     </section>
   );
 };
